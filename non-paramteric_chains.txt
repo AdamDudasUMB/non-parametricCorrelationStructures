@@ -1,0 +1,138 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import networkx as nx
+from itertools import combinations
+from matplotlib.path import Path
+from matplotlib.patches import PathPatch
+
+# Function to find all paths 
+def dfs_all_paths(graph, start, end, path=[]):
+    path = path + [start]
+    if start == end:
+        return [path]
+    if start not in graph:
+        return []
+    paths = []
+    for node in graph[start]:
+        if node not in path:
+            new_paths = dfs_all_paths(graph, node, end, path)
+            for p in new_paths:
+                if len(p) > 2:  
+                    paths.append(p)
+                    print('New chain found')
+    return paths
+
+#INPUT PREPARATION
+data = pd.read_csv('4-energyFarm.csv', sep=',')
+alpha = 0.1
+
+# Constructing the correlation graph
+correlation_matrix = data.corr(method='spearman')
+values = np.absolute(correlation_matrix.values)
+
+mask = ~np.eye(values.shape[0], dtype=bool)
+off_diagonal_values = values[mask]
+
+max_value = np.max(off_diagonal_values)
+mean_value = np.mean(off_diagonal_values)
+sigma = ((max_value + mean_value) / 2) + alpha
+
+corr_pruned = correlation_matrix.copy()
+corr_pruned[correlation_matrix.abs() < sigma] = 0
+corr_pruned = corr_pruned.round(3)
+
+G = nx.Graph()
+for i in range(len(corr_pruned)):
+    for j in range(i + 1, len(corr_pruned)):
+        weight = corr_pruned.iloc[i, j]
+        if weight != 0:
+            G.add_edge(corr_pruned.index[i], corr_pruned.columns[j], weight=weight)
+
+nodes = list(G.nodes)
+
+# Store all paths found
+all_paths = []
+
+for start_node, end_node in combinations(nodes, 2):
+    paths = dfs_all_paths(G, start_node, end_node)
+    all_paths.extend(paths)
+
+filtered_paths = [path for path in all_paths if len(path) > 2]
+
+print(f"Total paths found: {len(filtered_paths)}")
+
+# Function to visualize the chains
+def draw_curved_edge(ax, p0, p1, p2):
+    path_data = [
+        (Path.MOVETO, p0),
+        (Path.CURVE3, p1),
+        (Path.CURVE3, p2)
+    ]
+    codes, verts = zip(*path_data)
+    path = Path(verts, codes)
+    patch = PathPatch(path, edgecolor='black', facecolor='none', lw=1)
+    ax.add_patch(patch)
+    return path
+
+def point_on_path(path, t):
+    verts = path.vertices
+    codes = path.codes
+    if not (codes[1] == Path.CURVE3 and codes[2] == Path.CURVE3):
+        raise ValueError("Path must be a quadratic Bezier curve")
+    
+    p0, p1, p2 = verts
+    x = (1 - t)**2 * p0[0] + 2 * (1 - t) * t * p1[0] + t**2 * p2[0]
+    y = (1 - t)**2 * p0[1] + 2 * (1 - t) * t * p1[1] + t**2 * p2[1]
+    return x, y
+
+if len(filtered_paths) > 0:
+    num_columns = min(1, len(filtered_paths))  # Limit to at most 4 paths per column
+    num_rows = -(-len(filtered_paths) // num_columns)  # Ceiling division to determine number of rows
+
+    fig, axs = plt.subplots(nrows=num_rows, ncols=num_columns, figsize=(5 * num_columns, 5 * num_rows))
+    pos = nx.random_layout(G)
+    plt.tight_layout()
+
+    colormap = plt.colormaps.get_cmap('Pastel1')
+    node_colors = [colormap(i / len(nodes)) for i, node in enumerate(nodes)]
+    node_color_map = {node: node_colors[i] for i, node in enumerate(nodes)}
+
+    axs = axs.flatten() if num_rows > 1 or num_columns > 1 else [axs]
+
+    for i, path in enumerate(filtered_paths):
+        ax = axs[i]
+        subgraph = G.subgraph(path)
+        edges = [(path[j], path[j + 1]) for j in range(len(path) - 1)]
+
+        nx.draw_networkx_nodes(subgraph, pos, node_size=100, node_color='skyblue', edgecolors='darkblue', ax=ax)
+        
+        for node in subgraph.nodes():
+            x, y = pos[node]
+            ax.text(x, y, '\n'.join(node.split()), fontsize=14, color='black', fontfamily='sans-serif',
+                     ha='center', va='center',
+                     bbox=dict(facecolor=node_color_map[node], edgecolor='black', boxstyle='round,pad=0.3'))
+
+        for (u, v) in edges:
+            p0 = pos[u]
+            p2 = pos[v]
+            mid_point = ((p0[0] + p2[0]) / 2, (p0[1] + p2[1]) / 2)
+            rad = 0.3
+            control_x = mid_point[0] + rad * (p2[1] - p0[1])
+            control_y = mid_point[1] - rad * (p2[0] - p0[0])
+            control_point = (control_x, control_y)
+            path = draw_curved_edge(ax, p0, control_point, p2)
+
+            # Compute the position for the text label at t=0.5 for the midpoint of the path
+            xc, yc = point_on_path(path, 0.5)
+            weight = G[u][v]['weight']
+            ax.text(xc, yc, f"{weight:.3f}", fontsize=12, color='black', bbox=dict(facecolor='white', edgecolor='white', boxstyle='round,pad=0.2'))
+
+        ax.axis('off')
+
+    for j in range(len(filtered_paths), len(axs)):
+        fig.delaxes(axs[j])
+    
+    plt.savefig('output_retazce.png', dpi=1200)
+else:
+    print("No non-trivial correlation chains.")

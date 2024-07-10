@@ -1,0 +1,114 @@
+# NON-PARAMETRIC GRAPH
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import networkx as nx
+from matplotlib.path import Path
+from matplotlib.patches import PathPatch
+import matplotlib.pyplot as cm  # Updated import for colormaps
+
+# INPUT PREPARATION
+#data = pd.read_csv('masterGraph.csv', sep=';')
+data = pd.read_csv('4-energyFarm.csv', sep=',')
+alpha = 0.1
+
+correlation_matrix = data.corr(method='spearman')
+values = np.absolute(correlation_matrix.values)
+
+mask = ~np.eye(values.shape[0], dtype=bool)
+off_diagonal_values = values[mask]
+
+max_value = np.max(off_diagonal_values)
+mean_value = np.mean(off_diagonal_values)
+sigma = ((max_value + mean_value) / 2) + alpha
+
+corr_pruned = correlation_matrix.copy()
+corr_pruned[correlation_matrix.abs() < sigma] = 0
+corr_pruned = corr_pruned.round(3)
+
+# NON-PARAMETRIC CORRELATION GRAPH PREPARATION AND VISUALIZATION
+G = nx.Graph()
+for i in range(len(corr_pruned)):
+    for j in range(i + 1, len(corr_pruned)):
+        weight = corr_pruned.iloc[i, j]
+        if weight != 0:
+            G.add_edge(corr_pruned.index[i], corr_pruned.columns[j], weight=weight)
+
+
+pos = nx.planar_layout(G)
+#pos = nx.circular_layout(G)
+
+plt.figure(figsize=(12, 10))
+plt.tight_layout()
+ax = plt.gca()
+
+def draw_curved_edge(ax, p0, p1, p2):
+    """Draw a curved edge and return the path."""
+    path_data = [
+        (Path.MOVETO, p0),
+        (Path.CURVE3, p1),
+        (Path.CURVE3, p2)
+    ]
+    codes, verts = zip(*path_data)
+    path = Path(verts, codes)
+    patch = PathPatch(path, edgecolor='black', facecolor='none', lw=1)
+    ax.add_patch(patch)
+    return path
+
+def point_on_path(path, t):
+    """Compute a point on the path for parameter t in [0, 1]."""
+    verts = path.vertices
+    codes = path.codes
+    if not (codes[1] == Path.CURVE3 and codes[2] == Path.CURVE3):
+        raise ValueError("Path must be a quadratic Bezier curve")
+    
+    p0, p1, p2 = verts
+    x = (1 - t)**2 * p0[0] + 2 * (1 - t) * t * p1[0] + t**2 * p2[0]
+    y = (1 - t)**2 * p0[1] + 2 * (1 - t) * t * p1[1] + t**2 * p2[1]
+    return x, y
+
+for u, v, d in G.edges(data=True):
+    weight = d['weight']
+    p0 = pos[u]
+    p2 = pos[v]
+    mid_point = ((p0[0] + p2[0]) / 2, (p0[1] + p2[1]) / 2)
+    rad = 0.3
+
+    # Calculate control point for the Bezier curve
+    control_x = mid_point[0] + rad * (p2[1] - p0[1])
+    control_y = mid_point[1] - rad * (p2[0] - p0[0])
+    control_point = (control_x, control_y)
+
+    path = draw_curved_edge(ax, p0, control_point, p2)
+
+    xc, yc = point_on_path(path, 0.5)
+
+    ax.text(xc, yc, f"{weight:.3f}", fontsize=8, color='black', bbox=dict(facecolor='white', edgecolor='white', boxstyle='round,pad=0.2'))
+
+
+print(G.edges)
+
+nx.draw_networkx_nodes(G, pos, node_size=100, node_color='skyblue', edgecolors='darkblue')
+
+# Map each node to a unique color
+unique_nodes = list(G.nodes)
+num_nodes = len(unique_nodes)
+colormap = cm.get_cmap('Pastel1', num_nodes)  # Updated to use colormaps.get_cmap
+node_color_map = {node: colormap(i) for i, node in enumerate(unique_nodes)}
+
+multiline_labels = {node: '\n'.join(node.split()) for node in G.nodes()}
+
+for node, (x, y) in pos.items():
+    plt.text(x, y, multiline_labels[node],
+             fontsize=10,
+             color='black',  # Use 'color' instead of 'font_color'
+             fontfamily='sans-serif',  # Updated to 'fontfamily'
+             ha='center',
+             va='center',
+             bbox=dict(facecolor=node_color_map[node], edgecolor='black', boxstyle='round,pad=0.3'))
+
+plt.text(0, 1.05, f"$\sigma$(C) = {sigma}", transform=ax.transAxes, fontsize=8, verticalalignment='top')
+plt.axis('off')
+plt.savefig('output_1.png', dpi=1200)
+plt.show()
